@@ -94,7 +94,7 @@ const ChatUsersList = () => {
                   </p>
                 ) : user.recent_chat?.media_files?.length > 0 ? (
                   <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
-                    📷 Multimedia File
+                    {user.recent_chat.media_files[0].mime_type?.startsWith('video') ? '🎥 Video' : '📷 Photo'}
                   </p>
                 ) : (
                   <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>

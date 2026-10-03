@@ -62,7 +62,7 @@ const validateJWT = (req, res, next) => {
   const token = authHeader.split(' ')[1];
   jwt.verify(token, process.env.ACCESS_TOKEN_SECRET, (err, user) => {
     if (err) {
-      return res.status(403).json({ message: 'Unauthorized: Invalid or expired token' });
+      return res.status(401).json({ message: 'Unauthorized: Invalid or expired token' });
     }
     req.user = user;
     next();
@@ -73,5 +73,6 @@ const validateJWT = (req, res, next) => {
 router.get('/users', validateJWT,chatController.loadAllChatMembers);
 router.get('/conversations/:userId',validateJWT, chatController.conversations);
 router.post('/send/:userId/:mode?', validateJWT, upload.array('files', 10), chatController.newChat);
+router.delete('/send/:userId/draft/:filename', validateJWT, chatController.removeDraftFile);
 
 module.exports = router;
