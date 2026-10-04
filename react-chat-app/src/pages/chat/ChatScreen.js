@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef } from 'react';
+import { useState, useEffect, useRef, useCallback, memo } from 'react';
 import { useParams, useLocation } from "react-router-dom";
 import axiosInstance from '../../helpers/axiosInstance';
 import config from '../../configs/app';
@@ -11,6 +11,39 @@ const formatTime = (timestamp) => {
     return new Date(timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
 };
 
+// Memoized so a parent re-render (e.g. typing in the input) doesn't force
+// React to re-diff every bubble in a long conversation.
+const MessageBubble = memo(function MessageBubble({ msg, isSelf }) {
+    return (
+        <div className={`chat-message ${isSelf ? 'sent' : 'received'}`}>
+            {Array.isArray(msg.media_files) && msg.media_files.length > 0 && (
+                <div className="chat-media-group">
+                    {msg.media_files.map((file, i) => (
+                        file.mime_type?.startsWith('image') ? (
+                            <img
+                                key={i}
+                                src={file.preview}
+                                alt={file.original_name || 'attachment'}
+                                className="chat-media"
+                                loading="lazy"
+                                decoding="async"
+                            />
+                        ) : file.mime_type?.startsWith('video') ? (
+                            <video key={i} src={file.preview} controls className="chat-media" preload="none" />
+                        ) : (
+                            <a key={i} href={file.preview} target="_blank" rel="noreferrer" className="chat-file-link">
+                                📄 {file.original_name}
+                            </a>
+                        )
+                    ))}
+                </div>
+            )}
+            {msg.message && <p className="chat-message-text">{msg.message}</p>}
+            <span className="chat-timestamp">{formatTime(msg.created_at)}</span>
+        </div>
+    );
+});
+
 const ChatScreen = () => {
     const [messages, setMessages] = useState([]);
     const [draftMessage, setDraftMessage] = useState([]);
@@ -19,6 +52,7 @@ const ChatScreen = () => {
     const [uploading, setUploading] = useState(false);
     const [messageLoading, setMessageLoading] = useState(false); // For loading state of sending messages
     const chatBodyRef = useRef(null);
+    const scrollThrottleRef = useRef(null);
     const { userId } = useParams();
     const location = useLocation();
     const displayName = location.state?.displayName || "User";
@@ -78,7 +112,7 @@ const ChatScreen = () => {
 
     // Send a message or file
     const sendMessage = async () => {
-        if (!newMessage && (draftMessage?.media_files?.length??0)==0) return;
+        if (!newMessage && (draftMessage?.media_files?.length??0)===0) return;
         setLoading(true);
         const formData = new FormData();
         formData.append('userId', userId);
@@ -151,38 +185,42 @@ const ChatScreen = () => {
         }, 600);  // Time should match the scroll behavior duration
     };
 
-    // Detect when the user scrolls to the bottom
-    const handleScroll = (() => {
+    // Detect when the user scrolls near either edge of the chat body.
+    // The throttle guard lives in a ref (not a per-render closure variable)
+    // so it actually persists between scroll events instead of resetting
+    // on every re-render.
+    const handleScroll = useCallback(() => {
         if (isScrolling) return;
-        let throttleTimeout = null; // To manage throttling
+        const chatBody = chatBodyRef.current;
+        if (!chatBody) return;
+        if (scrollThrottleRef.current) return;
 
-        return () => {
-            const chatBody = chatBodyRef.current;
-            if (!chatBody) return;
-
-            // Throttling logic
-            if (throttleTimeout) return;
-
-            throttleTimeout = setTimeout(() => {
-                throttleTimeout = null; // Reset throttle timeout
-                if(!messageLoading){
-                    if (chatBody.scrollTop === 0) {      // Fetch Previous
-                        fetchMessages("previous");  // Uncomment to fetch messages
-                    }else if (chatBody.scrollHeight === chatBody.scrollTop + chatBody.clientHeight) {
-                        fetchMessages();
-                    }
+        scrollThrottleRef.current = setTimeout(() => {
+            scrollThrottleRef.current = null;
+            if (!messageLoading) {
+                if (chatBody.scrollTop === 0) {      // Fetch Previous
+                    fetchMessages("previous");
+                } else if (chatBody.scrollHeight === chatBody.scrollTop + chatBody.clientHeight) {
+                    fetchMessages();
                 }
-            }, 500); // Throttle interval (1 second)
-        };
-    })();
+            }
+        }, 500); // Throttle interval
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isScrolling, messageLoading, userId]);
 
-    // Handle WebSocket incoming messages
+    // Handle WebSocket incoming messages: the server already sends the full
+    // message payload, so append it directly instead of re-fetching the
+    // whole conversation on every event.
     const handleNewMessage = (data) => {
-        console.log("New message from WebSocket:", data);
-        if(!messageLoading){
-         fetchMessages();
+        const incoming = data?.message;
+        if (!incoming) return;
+        // This socket only ever receives messages where the current user is
+        // the receiver, so a message belongs to this open thread when it was
+        // sent by the conversation partner currently being viewed.
+        if (incoming.sender_id === userId) {
+            setMessages((prev) => [...prev, incoming]);
+            setTimeout(() => { scrollToBottom(); }, 100);
         }
-        setTimeout(() => { scrollToBottom(); }, 100);
     };
 
     useEffect(() => {
@@ -209,43 +247,32 @@ const ChatScreen = () => {
                 {/* Chat Body */}
                 <div className="chat-body" ref={chatBodyRef} onScroll={handleScroll}>
                     {messages.map((msg, index) => (
-                            <div key={msg._id || index} className={`chat-message ${msg.sender_id === user?._id ? 'sent' : 'received'}`}>
-                                {Array.isArray(msg.media_files) && msg.media_files.length > 0 && (
-                                    <div className="chat-media-group">
-                                        {msg.media_files.map((file, i) => (
-                                            file.mime_type?.startsWith('image') ? (
-                                                <img key={i} src={file.preview} alt={file.original_name || 'attachment'} className="chat-media" />
-                                            ) : file.mime_type?.startsWith('video') ? (
-                                                <video key={i} src={file.preview} controls className="chat-media" />
-                                            ) : (
-                                                <a key={i} href={file.preview} target="_blank" rel="noreferrer" className="chat-file-link">
-                                                    📄 {file.original_name}
-                                                </a>
-                                            )
-                                        ))}
-                                    </div>
-                                )}
-                                {msg.message && <p className="chat-message-text">{msg.message}</p>}
-                                <span className="chat-timestamp">{formatTime(msg.created_at)}</span>
-                            </div>
-                        ))}
+                        <MessageBubble
+                            key={msg._id || index}
+                            msg={msg}
+                            isSelf={msg.sender_id === user?._id}
+                        />
+                    ))}
                 </div>
 
 
                 {draftMessage?.media_files?.length > 0 && (
                     <div className='draft-message'>
-                        {draftMessage.media_files.map((fileObj, index) => (
-                            <div key={index} className='file-temp'>
+                        {draftMessage.media_files.map((fileObj) => (
+                            <div key={fileObj.filename} className='file-temp'>
                                 {fileObj.mime_type?.startsWith('image') ? (
                                     <img
                                         src={fileObj.preview}
                                         alt={fileObj.original_name}
                                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
+                                        loading="lazy"
+                                        decoding="async"
                                     />
                                 ) : fileObj.mime_type?.startsWith('video') ? (
                                     <video
                                         src={fileObj.preview}
                                         controls
+                                        preload="metadata"
                                         style={{ width: '100%', height: '100%', objectFit: 'cover' }}
                                     />
                                 ) : (

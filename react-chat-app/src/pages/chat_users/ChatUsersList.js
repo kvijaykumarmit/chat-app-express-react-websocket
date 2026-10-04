@@ -1,10 +1,43 @@
-import React, { useEffect, useState, useRef } from 'react';
+import { useEffect, useState, useRef, memo } from 'react';
 import { useNavigate } from "react-router-dom";
 import axiosInstance from '../../helpers/axiosInstance';
 import config from '../../configs/app';
 import { useAuth } from '../../providers/AuthProvider';
 import { useWebSocket } from '../../providers/WebSocketProvider';
 import './chat-users.css'
+
+// Memoized so appending a new page of users (or reordering on a new message)
+// doesn't force React to re-diff every row that didn't actually change.
+const UserListItem = memo(function UserListItem({ user, onClick }) {
+  return (
+    <div className="d-flex align-items-start mb-3 user-cards" onClick={onClick}>
+      <img
+        src={user.image || `${config.baseURL}/images/placeholder.png`}
+        alt="User"
+        className="rounded-circle me-3"
+        style={{ width: '50px', height: '50px', objectFit: 'cover' }}
+        loading="lazy"
+        decoding="async"
+      />
+      <div>
+        <h6 className="mb-1">{user.display_name}</h6>
+        {user.recent_chat?.message ? (
+          <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
+            {user.recent_chat.message}
+          </p>
+        ) : user.recent_chat?.media_files?.length > 0 ? (
+          <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
+            {user.recent_chat.media_files[0].mime_type?.startsWith('video') ? '🎥 Video' : '📷 Photo'}
+          </p>
+        ) : (
+          <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
+            No recent messages
+          </p>
+        )}
+      </div>
+    </div>
+  );
+});
 
 const ChatUsersList = () => {
   const [users, setUsers] = useState([]);
@@ -59,10 +92,40 @@ const ChatUsersList = () => {
 
   useEffect(() => {
     fetchUsers();
-    ws?.on('new-message',(data)=>{
-      console.log("data on message", data);
-    });
   }, []); // Fetch initial users on component mount
+
+  // Keep the inbox preview live: when a message arrives for a user already in
+  // the list, update their preview and bump them to the top, instead of
+  // re-fetching the whole list. Registered/cleaned up against `ws` directly
+  // (not an empty dep array) since the socket connects asynchronously after
+  // this component mounts.
+  useEffect(() => {
+    if (!ws) return;
+
+    const handleNewMessage = (data) => {
+      const incoming = data?.message;
+      if (!incoming) return;
+      setUsers((prev) => {
+        const idx = prev.findIndex((u) => u._id === incoming.sender_id);
+        if (idx === -1) return prev;
+        const updatedUser = {
+          ...prev[idx],
+          recent_chat: {
+            message: incoming.message,
+            created_at: incoming.created_at,
+            media_files: incoming.media_files,
+          },
+        };
+        const rest = prev.filter((_, i) => i !== idx);
+        return [updatedUser, ...rest];
+      });
+    };
+
+    ws.on('new-message', handleNewMessage);
+    return () => {
+      ws.off('new-message', handleNewMessage);
+    };
+  }, [ws]);
 
   return (
     <div className="container">
@@ -79,30 +142,11 @@ const ChatUsersList = () => {
           ref={containerRef}
         >
           {users.map((user) => (
-            <div key={user._id} className="d-flex align-items-start mb-3 user-cards"  onClick={() => navigateToUser(user._id, user.display_name)}>
-              <img
-                src={user.image || `${config.baseURL}/images/placeholder.png`}
-                alt="User"
-                className="rounded-circle me-3"
-                style={{ width: '50px', height: '50px', objectFit: 'cover' }}
-              />
-              <div>
-                <h6 className="mb-1">{user.display_name}</h6>
-                {user.recent_chat?.message ? (
-                  <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
-                    {user.recent_chat.message}
-                  </p>
-                ) : user.recent_chat?.media_files?.length > 0 ? (
-                  <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
-                    {user.recent_chat.media_files[0].mime_type?.startsWith('video') ? '🎥 Video' : '📷 Photo'}
-                  </p>
-                ) : (
-                  <p className="text-muted mb-0" style={{ fontSize: '0.9rem' }}>
-                    No recent messages
-                  </p>
-                )}
-              </div>
-            </div>
+            <UserListItem
+              key={user._id}
+              user={user}
+              onClick={() => navigateToUser(user._id, user.display_name)}
+            />
           ))}
           {loading && <p className="text-center">Loading...</p>}
         </div>
